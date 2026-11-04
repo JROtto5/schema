@@ -1398,6 +1398,117 @@ describe("ArraySchema Tests", () => {
             });
         });
 
+        describe("negative and out-of-range arguments", () => {
+            class Item extends Schema {
+                @type("number") i: number;
+            }
+            class State extends Schema {
+                @type([Item]) items = new ArraySchema<Item>();
+            }
+            class PrimitiveState extends Schema {
+                @type(["number"]) items = new ArraySchema<number>();
+            }
+
+            const item = (i: number) => new Item().assign({ i });
+
+            /** 5 items (0..4), already delivered to a client. */
+            function setup() {
+                const state = new State();
+                for (let i = 0; i < 5; i++) { state.items.push(item(i)); }
+                const decodedState = createInstanceFromReflection(state);
+                decodedState.decode(state.encode());
+                return { state, decodedState };
+            }
+
+            function assertInSync(state: State, decodedState: any, expected: number[]) {
+                assert.deepStrictEqual(expected, state.items.map((entry) => entry.i));
+                assert.deepStrictEqual(state.items.toJSON(), decodedState.items.toJSON());
+                assertRefIdCounts(state, decodedState);
+                assertDeepStrictEqualEncodeAll(state);
+            }
+
+            it("negative start, deleteCount omitted", () => {
+                const { state, decodedState } = setup();
+
+                const removed = state.items.splice(-2);
+                decodedState.decode(state.encode());
+
+                assert.deepStrictEqual([3, 4], removed.map((entry) => entry.i));
+                assertInSync(state, decodedState, [0, 1, 2]);
+            });
+
+            it("negative start with deleteCount and inserted items", () => {
+                const { state, decodedState } = setup();
+
+                state.items.splice(-1, 1);
+                state.items.splice(-2, 1, item(10), item(11));
+                decodedState.decode(state.encode());
+
+                assertInSync(state, decodedState, [0, 1, 10, 11, 3]);
+            });
+
+            it("start < -length starts at 0", () => {
+                const { state, decodedState } = setup();
+
+                state.items.splice(-10, 2, item(10));
+                decodedState.decode(state.encode());
+
+                assertInSync(state, decodedState, [10, 2, 3, 4]);
+            });
+
+            it("negative deleteCount inserts at start", () => {
+                const { state, decodedState } = setup();
+
+                state.items.splice(2, -1, item(10));
+                decodedState.decode(state.encode());
+
+                assertInSync(state, decodedState, [0, 1, 10, 2, 3, 4]);
+            });
+
+            it("deleteCount past the end stages no missing indexes", () => {
+                const { state, decodedState } = setup();
+
+                const warnings: string[] = [];
+                const warn = console.warn;
+                console.warn = (...args: any[]) => warnings.push(args.map(String).join(" "));
+                try { state.items.splice(3, 10); } finally { console.warn = warn; }
+                decodedState.decode(state.encode());
+
+                assert.deepStrictEqual([], warnings);
+                assertInSync(state, decodedState, [0, 1, 2]);
+            });
+
+            it("no arguments removes nothing; undefined start is 0", () => {
+                const { state, decodedState } = setup();
+
+                assert.deepStrictEqual([], (state.items as any).splice());
+                decodedState.decode(state.encode());
+
+                assertInSync(state, decodedState, [0, 1, 2, 3, 4]);
+
+                // an explicit undefined start is 0, as on a plain Array
+                assert.deepStrictEqual([0], (state.items as any).splice(undefined, 1).map((entry: Item) => entry.i));
+                decodedState.decode(state.encode());
+
+                assertInSync(state, decodedState, [1, 2, 3, 4]);
+            });
+
+            it("negative start with primitive children", () => {
+                const state = new PrimitiveState();
+                for (let i = 0; i < 5; i++) { state.items.push(i); }
+
+                const decodedState = createInstanceFromReflection(state);
+                decodedState.decode(state.encode());
+
+                state.items.splice(-3, 1, 10);
+                decodedState.decode(state.encode());
+
+                assert.deepStrictEqual([0, 1, 10, 3, 4], state.items.toJSON());
+                assert.deepStrictEqual(state.items.toJSON(), decodedState.items.toJSON());
+                assertDeepStrictEqualEncodeAll(state);
+            });
+        });
+
         it("should allow consecutive splices (same place, 3 items)", () => {
             class Item extends Schema {
                 @type("number") i: number;

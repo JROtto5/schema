@@ -780,6 +780,19 @@ export class ArraySchema<V = any> implements Array<V>, Collection<number, V>, IR
         const tmpItemsLength = tmpItems.length;
         const insertCount = insertItems.length;
 
+        // `splice()` with no arguments removes nothing, as on a plain Array
+        if (arguments.length === 0) { return []; }
+
+        // Clamp like Array.prototype.splice: the loops below index `indexes[]`
+        // directly, so a negative or out-of-range value would stage DELETEs
+        // for slots that don't exist.
+        start = Math.trunc(start) || 0;
+        start = (start < 0) ? Math.max(itemsLength + start, 0) : Math.min(start, itemsLength);
+        // an explicit `undefined` keeps the existing delete-to-end (Array deletes nothing)
+        deleteCount = (deleteCount === undefined)
+            ? itemsLength - start
+            : Math.min(Math.max(Math.trunc(deleteCount) || 0, 0), itemsLength - start);
+
         // build up-to-date list of indexes, excluding removed values.
         const indexes: number[] = [];
         for (let i = 0; i < tmpItemsLength; i++) {
@@ -793,30 +806,19 @@ export class ArraySchema<V = any> implements Array<V>, Collection<number, V>, IR
         // every later `indexes[]` entry and `base`.
         let unsent: number[] | undefined;
 
-        if (itemsLength > start) {
-            // if deleteCount is not provided, delete all items from start to end
-            if (deleteCount === undefined) {
-                deleteCount = itemsLength - start;
-            }
+        for (let i = start; i < start + deleteCount; i++) {
+            if (self.$settleReorder(indexes[i])) { return this.splice(start, deleteCount, ...insertItems); }
+        }
 
-            for (let i = start, end = Math.min(start + deleteCount, itemsLength); i < end; i++) {
-                if (self.$settleReorder(indexes[i])) { return this.splice(start, deleteCount, ...insertItems); }
-            }
-
-            //
-            // delete operations at correct index
-            //
-            for (let i = start; i < start + deleteCount; i++) {
-                const index = indexes[i];
-                const isUnsent = self.$isUnsentAdd(index);
-                changeTree.delete(index, OPERATION.DELETE);
-                if (isUnsent) { (unsent ??= []).push(index); }
-                else { deletedIndexes[index] = true; }
-            }
-
-        } else {
-            // not enough items to delete
-            deleteCount = 0;
+        //
+        // delete operations at correct index
+        //
+        for (let i = start; i < start + deleteCount; i++) {
+            const index = indexes[i];
+            const isUnsent = self.$isUnsentAdd(index);
+            changeTree.delete(index, OPERATION.DELETE);
+            if (isUnsent) { (unsent ??= []).push(index); }
+            else { deletedIndexes[index] = true; }
         }
 
         // insert operations
